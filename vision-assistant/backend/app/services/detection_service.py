@@ -1,49 +1,50 @@
 from ultralytics import YOLO
-from typing import List, Dict
 import cv2
 import numpy as np
 from PIL import Image
 import io
+import logging
 
 class DetectionService:
     def __init__(self):
-        # Carga el modelo preentrenado
-        self.model = YOLO("app/models/yolov8n-oiv7.pt")
-        
-    async def detect_objects(self, image_bytes: bytes) -> List[Dict]:
-        """Detecta objetos en una imagen y devuelve descripciones accesibles"""
         try:
-            # Convertir bytes a imagen OpenCV
+            self.model = YOLO("app/models/yolov8n-oiv7.pt")
+            # Verificación simple del modelo
+            dummy_image = np.zeros((100, 100, 3), dtype=np.uint8)
+            self.model.predict(dummy_image, verbose=False)
+            logging.info("Modelo YOLO cargado correctamente")
+        except Exception as e:
+            logging.error(f"Error al cargar el modelo YOLO: {str(e)}")
+            raise
+
+    async def detect_objects(self, image_bytes: bytes) -> list:
+        try:
+            # Convertir bytes a imagen
             image = Image.open(io.BytesIO(image_bytes))
+            
+            # Convertir a formato OpenCV
             image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
             
             # Ejecutar detección
-            results = self.model(image_cv)
+            results = self.model(image_cv, verbose=False)
             
-            # Procesar resultados para descripción accesible
+            # Procesar resultados
             detections = []
             for result in results:
                 for box in result.boxes:
-                    class_id = int(box.cls)
-                    label = result.names[class_id]
-                    confidence = float(box.conf)
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    
                     detections.append({
-                        "object": label,
-                        "confidence": confidence,
+                        "object": result.names[int(box.cls)],
+                        "confidence": float(box.conf),
                         "position": {
-                            "x_center": (x1 + x2) / 2,
-                            "y_center": (y1 + y2) / 2,
-                            "width": x2 - x1,
-                            "height": y2 - y1
+                            "x1": int(box.xyxy[0][0]),
+                            "y1": int(box.xyxy[0][1]),
+                            "x2": int(box.xyxy[0][2]),
+                            "y2": int(box.xyxy[0][3])
                         }
                     })
-            
-            # Ordenar por confianza (mayor primero)
-            detections.sort(key=lambda x: x["confidence"], reverse=True)
             
             return detections
             
         except Exception as e:
-            raise ValueError(f"Error en detección de objetos: {str(e)}")
+            logging.error(f"Error en detect_objects: {str(e)}")
+            raise ValueError(f"Error en el procesamiento de imagen: {str(e)}")
