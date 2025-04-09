@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "Vision Assistant",
+    "slug": "vision-assistant",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Necesitamos acceso a tu cámara para la detección de objetos en tiempo real."
+        }
+      ]
+    ],
+    "android": {
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "package": "com.yourcompany.visionassistant"
+    }
+  }
+}
