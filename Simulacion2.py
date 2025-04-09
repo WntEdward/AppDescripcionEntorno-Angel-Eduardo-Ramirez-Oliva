@@ -2,140 +2,158 @@ import cv2
 from ultralytics import YOLO
 import pyttsx3
 import time
-import numpy as np
+from collections import defaultdict
+import pytesseract
 
-class ObstacleDetector:
+class GeneralObjectDetector:
     def __init__(self):
-        # Cargar modelo YOLO con configuración mejorada
-        self.model = YOLO("vision-assistant/backend/app/models/yolov8n-oiv7.pt")
-        self.model.overrides['conf'] = 0.35  # Umbral más bajo para detectar más objetos
-        self.model.overrides['iou'] = 0.45   # Balance entre precisión y detección
-        
-        # Configurar motor de voz robusto
-        self.engine = self.setup_voice_engine()
-        
-        # Área de interés frontal (20% central del frame)
-        self.front_zone = (0.4, 0.6)  # Rango X (40%-60%)
-        self.danger_zone = 0.7         # Porción inferior (70%-100%)
-        
-        # Control de anuncios
-        self.last_announce = 0
-        self.announce_cooldown = 2  # Segundos entre anuncios
-        
-        # Obstáculos prioritarios (orden de importancia)
-        self.priority_obstacles = [
-            'person', 'bicycle', 'car', 'motorcycle', 
-            'trash can', 'chair', 'table', 'pole'
-        ]
-    
-    def setup_voice_engine(self):
-        """Configuración robusta del motor de voz"""
+        # Cargar modelo YOLO
+        self.model = YOLO("yolov8m.pt")  # Modelo más robusto
+
+        # Configurar motor de voz
+        self.engine = self.init_voice_engine()
+        self.last_announce_time = 0
+        self.announce_cooldown = 5  # Segundos entre anuncios
+
+    def init_voice_engine(self):
+        """Inicializa el motor de voz con soporte para Codespaces"""
         try:
             engine = pyttsx3.init()
-            engine.setProperty('rate', 160)
-            engine.setProperty('volume', 1.0)
+            engine.setProperty('rate', 150)
+            engine.setProperty('volume', 0.9)
+
             voices = engine.getProperty('voices')
-            if len(voices) > 1:
-                engine.setProperty('voice', voices[1].id)  # Voz más clara
+            if voices:
+                engine.setProperty('voice', voices[0].id)
+
             return engine
         except Exception as e:
-            print(f"Error de voz: {e}. Instala: sudo apt-get install espeak")
+            print(f"Advertencia: No se pudo inicializar voz. Error: {e}")
+            print("Instala espeak con: sudo apt-get install espeak libespeak1")
             return None
-    
-    def is_in_danger_zone(self, x_center, y_bottom, frame_width, frame_height):
-        """Determina si un objeto está en el área de peligro frontal"""
-        x_min, x_max = self.front_zone
-        x_relative = x_center / frame_width
-        y_relative = y_bottom / frame_height
-        
-        # Objeto está en el centro horizontal y parte inferior
-        return (x_min < x_relative < x_max) and (y_relative > self.danger_zone)
-    
-    def detect_obstacles(self, frame):
-        """Detecta objetos potencialmente peligrosos"""
-        results = self.model(frame, imgsz=640, verbose=False)
-        obstacles = []
-        
+
+    def describe_scene(self, frame):
+        """Detecta y describe todos los objetos en el frame"""
+        results = self.model(frame, verbose=False)
+        object_counts = defaultdict(int)
+        object_details = []
+
         for result in results:
             for box in result.boxes:
                 label = result.names[int(box.cls)]
                 conf = float(box.conf)
-                
-                if label in self.priority_obstacles and conf > 0.35:
+                if conf > 0.2:  # Umbral de confianza más bajo
+                    object_counts[label] += 1
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    x_center = (x1 + x2) / 2
-                    y_bottom = y2
-                    
-                    if self.is_in_danger_zone(x_center, y_bottom, frame.shape[1], frame.shape[0]):
-                        obstacles.append({
-                            'label': label,
-                            'confidence': conf,
-                            'distance': 'muy cerca' if (y_bottom/frame.shape[0]) > 0.85 else 'cerca'
-                        })
-        
-        return sorted(obstacles, key=lambda x: (
-            -self.priority_obstacles.index(x['label']),  # Prioridad según lista
-            -x['confidence']                            # Luego por confianza
-        ))
-    
-    def announce_danger(self, obstacles):
-        """Anuncia el obstáculo más peligroso"""
-        if not obstacles or not self.engine:
-            return
-            
-        current_time = time.time()
-        if current_time - self.last_announce < self.announce_cooldown:
-            return
-        
-        main_obstacle = obstacles[0]
-        message = f"Cuidado: {main_obstacle['label']} {main_obstacle['distance']}"
-        
-        print(f"\n🚨 {message} 🚨")  # Feedback visual
-        try:
-            self.engine.say(message)
-            self.engine.runAndWait()
-            self.last_announce = current_time
-        except Exception as e:
-            print(f"Error en voz: {e}")
-    
-    def run(self, video_source):
-        """Ejecuta el detector de obstáculos"""
+                    object_details.append({
+                        'label': label,
+                        'confidence': conf,
+                        'position': self.get_position_description(x1, x2, frame.shape[1]),
+                        'coords': (x1, y1, x2, y2)
+                    })
+
+        return object_counts, object_details
+
+    def get_position_description(self, x1, x2, frame_width):
+        """Describe la posición horizontal del objeto"""
+        x_center = (x1 + x2) / 2
+        if x_center < frame_width * 0.33:
+            return "a la izquierda"
+        elif x_center > frame_width * 0.66:
+            return "a la derecha"
+        else:
+            return "en el centro"
+
+    def generate_description(self, object_counts, object_details):
+        """Genera una descripción completa de la escena"""
+        if not object_counts:
+            return "No se detectaron objetos"
+
+        count_desc = ", ".join([f"{count} {obj}{'s' if count > 1 else ''}" 
+                              for obj, count in object_counts.items()])
+        main_desc = f"En la escena hay: {count_desc}. "
+
+        if object_details:
+            main_objects = sorted(object_details, key=lambda x: x['confidence'], reverse=True)[:3]
+            detail_desc = " ".join([f"Hay un {obj['label']} {obj['position']}. " 
+                                    for obj in main_objects])
+            return main_desc + detail_desc
+
+        return main_desc
+
+    def detect_obstacle_ahead(self, object_details, frame_height):
+        """Detecta si hay un objeto al frente que puede representar un obstáculo"""
+        for obj in object_details:
+            if obj['position'] == 'en el centro':
+                if obj['label'] in ['person', 'car', 'chair', 'bench', 'bicycle', 'dog']:
+                    return f"Cuidado, hay un {obj['label']} justo al frente."
+        return ""
+
+    def detect_text(self, frame):
+        """Detecta texto en la imagen usando OCR"""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        text = pytesseract.image_to_string(gray)
+        return text.strip()
+
+    def run_detection(self, video_source):
+        """Ejecuta la detección en tiempo real"""
         cap = cv2.VideoCapture(video_source)
         if not cap.isOpened():
-            print("Error al abrir el video/cámara")
+            print("Error al abrir el video")
             return
-        
-        print("\n🔍 Iniciando detector de obstáculos frontales...")
-        print("Solo anunciará objetos en tu camino directo")
+
+        # Inicializa el escritor de video
+        fourcc = cv2.VideoWriter_fourcc(*'XVID')
+        out = cv2.VideoWriter('detecciones.avi', fourcc, 20.0, (640, 480))
+
+        print("\n🔍 Iniciando descripción general del entorno...")
         print("Presiona Ctrl+C para detener\n")
-        
+
         try:
             while True:
+                start_time = time.time()
                 ret, frame = cap.read()
                 if not ret:
                     break
-                
-                # Voltear horizontalmente para simular espejo (como visión humana)
-                frame = cv2.flip(frame, 1)
-                
-                # Detección y anuncio
-                obstacles = self.detect_obstacles(frame)
-                self.announce_danger(obstacles)
-                
-                # Control de velocidad (~15 FPS)
-                time.sleep(0.065)
-                
+
+                object_counts, object_details = self.describe_scene(frame)
+                current_time = time.time()
+
+                if current_time - self.last_announce_time > self.announce_cooldown:
+                    description = self.generate_description(object_counts, object_details)
+                    obstacle_warning = self.detect_obstacle_ahead(object_details, frame.shape[0])
+                    text_found = self.detect_text(frame)
+
+                    full_description = f"{description} {obstacle_warning}"
+
+                    if text_found:
+                        full_description += f" También se lee: {text_found}."
+
+                    print(f"\n🗣️ Descripción: {full_description}")
+
+                    if self.engine:
+                        self.engine.say(full_description)
+                        self.engine.runAndWait()
+
+                    self.last_announce_time = current_time
+
+                # Escribe el frame procesado en el archivo
+                out.write(frame)
+
+                processing_time = time.time() - start_time
+                wait_time = max(0.01, 1.0 - processing_time)
+                time.sleep(wait_time)
+
         except KeyboardInterrupt:
-            print("\nDeteniendo detector...")
+            print("\n🛑 Detección detenida por el usuario")
         finally:
             cap.release()
-            print("Proceso finalizado")
+            out.release()  # Libera el escritor de video
+            print("✅ Proceso finalizado")
 
 if __name__ == "__main__":
-    detector = ObstacleDetector()
-    
-    # Para video (reemplaza con tu ruta)
-    detector.run("/workspaces/AppDescripcionEntorno-Angel-Eduardo-Ramirez-Oliva/Videos de prueba/video_calle.mp4")
-    
-    # Para cámara web (descomenta):
-    # detector.run(0)
+    detector = GeneralObjectDetector()
+
+    # Para usar con video:
+    video_path = "/workspaces/AppDescripcionEntorno-Angel-Eduardo-Ramirez-Oliva/Caminata.mp4"
+    detector.run_detection(video_path)
